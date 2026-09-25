@@ -5,19 +5,39 @@ const bcrypt = require('bcryptjs');
 const initSqlJs = require('sql.js');
 const fs = require('fs');
 const path = require('path');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-const PORT = 8000;
+const PORT = process.env.PORT || 8000;
 const SALT_ROUNDS = 12;
 const DB_PATH = path.join(__dirname, 'clinic.db');
 
-let db;
+// ── Supabase Configuration ─────────────────────────────────────────
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jtnzjmcejnmeyyzeqcel.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_w6OkN7lfxkzcY4NHb9YASw_MiajRLxP';
 
-// ── Database Setup ──────────────────────────────────────────────────
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+let useSupabase = false;
+let db; // Fallback SQLite db instance
+
+// ── Database Setup & Health Check ───────────────────────────────────
 async function initDatabase() {
-  const SQL = await initSqlJs();
+  // Test connection to Supabase
+  try {
+    const { data, error } = await supabase.from('users').select('id').limit(1);
+    if (!error) {
+      useSupabase = true;
+      console.log('⚡ Connected to Supabase backend successfully!');
+    } else {
+      console.log(`⚠️ Supabase Notice: ${error.message}`);
+      console.log('🔄 Falling back to local SQLite database engine...');
+    }
+  } catch (err) {
+    console.log('⚠️ Could not connect to Supabase, fallback to local SQLite database.');
+  }
 
-  // Load existing database if it exists
+  // Always initialize SQLite fallback to ensure 100% uptime
+  const SQL = await initSqlJs();
   if (fs.existsSync(DB_PATH)) {
     const fileBuffer = fs.readFileSync(DB_PATH);
     db = new SQL.Database(fileBuffer);
@@ -52,24 +72,26 @@ async function initDatabase() {
     )
   `);
 
-  // Seed admin account if none exists
+  // Seed default admin account in SQLite fallback
   const adminCheck = db.exec("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
   if (adminCheck.length === 0) {
     const hash = bcrypt.hashSync('admin123', SALT_ROUNDS);
     db.run('INSERT INTO users (name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)',
-      ['Admin', 'admin@clinic.com', '', hash, 'admin']);
+      ['Admin', 'admin@clinic.com', '+92 300 1234567', hash, 'admin']);
     saveDb();
-    console.log('✓ Default admin created: admin@clinic.com / admin123');
+    console.log('✓ Local Default admin ready: admin@clinic.com / admin123');
   }
 }
 
 function saveDb() {
-  const data = db.export();
-  const buffer = Buffer.from(data);
-  fs.writeFileSync(DB_PATH, buffer);
+  if (db) {
+    const data = db.export();
+    const buffer = Buffer.from(data);
+    fs.writeFileSync(DB_PATH, buffer);
+  }
 }
 
-// Helper: run sql.js query and return rows as array of objects
+// ── SQLite Helpers ──────────────────────────────────────────────────
 function dbAll(sql, params = []) {
   const stmt = db.prepare(sql);
   stmt.bind(params);
@@ -92,7 +114,6 @@ function dbRun(sql, params = []) {
   stmt.step();
   stmt.free();
   saveDb();
-  // Return last insert id
   const result = db.exec("SELECT last_insert_rowid() as id");
   return result.length > 0 ? result[0].values[0][0] : null;
 }
@@ -119,6 +140,15 @@ app.use(express.static(__dirname, {
   index: 'index.html',
   extensions: ['html']
 }));
+
+// Expose Supabase Config endpoint to frontend
+app.get('/api/config/supabase', (req, res) => {
+  res.json({
+    supabaseUrl: SUPABASE_URL,
+    supabaseKey: SUPABASE_KEY,
+    useSupabase
+  });
+});
 
 // ── Auth Middleware Helpers ──────────────────────────────────────────
 function requireAuth(req, res, next) {
@@ -153,31 +183,53 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 6 characters.' });
     }
 
-    const existing = dbGet('SELECT id FROM users WHERE email = ?', [email.toLowerCase().trim()]);
-    if (existing) {
-      return res.status(409).json({ error: 'An account with this email already exists.' });
-    }
-
+    const cleanEmail = email.toLowerCase().trim();
+    const cleanName = name.trim();
+    const cleanPhone = phone || '';
     const hash = await bcrypt.hash(password, SALT_ROUNDS);
-    dbRun(
-      'INSERT INTO users (name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)',
-      [name.trim(), email.toLowerCase().trim(), phone || '', hash, 'patient']
-    );
 
-    // Query the newly created user to get the real ID
-    const newUser = dbGet('SELECT id, name, email, phone, role FROM users WHERE email = ?', [email.toLowerCase().trim()]);
+    if (useSupabase) {
+      // Check existing in Supabase
+      const { data: existing } = await supabase.from('users').select('id').eq('email', cleanEmail).maybeSingle();
+      if (existing) {
+        return res.status(409).json({ error: 'An account with this email already exists.' });
+      }
 
-    req.session.userId = newUser.id;
-    req.session.role = 'patient';
-    req.session.userName = newUser.name;
+      const { data: newUser, error } = await supabase.from('users').insert([{
+        name: cleanName,
+        email: cleanEmail,
+        phone: cleanPhone,
+        password_hash: hash,
+        role: 'patient'
+      }]).select('id, name, email, phone, role').single();
 
-    res.status(201).json({
-      message: 'Account created successfully.',
-      user: newUser
-    });
+      if (error) throw error;
+
+      req.session.userId = newUser.id;
+      req.session.role = 'patient';
+      req.session.userName = newUser.name;
+
+      return res.status(201).json({ message: 'Account created successfully.', user: newUser });
+    } else {
+      // SQLite fallback
+      const existing = dbGet('SELECT id FROM users WHERE email = ?', [cleanEmail]);
+      if (existing) {
+        return res.status(409).json({ error: 'An account with this email already exists.' });
+      }
+
+      dbRun('INSERT INTO users (name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)',
+        [cleanName, cleanEmail, cleanPhone, hash, 'patient']);
+
+      const newUser = dbGet('SELECT id, name, email, phone, role FROM users WHERE email = ?', [cleanEmail]);
+      req.session.userId = newUser.id;
+      req.session.role = 'patient';
+      req.session.userName = newUser.name;
+
+      return res.status(201).json({ message: 'Account created successfully.', user: newUser });
+    }
   } catch (err) {
     console.error('Register error:', err);
-    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+    res.status(500).json({ error: err.message || 'Something went wrong. Please try again.' });
   }
 });
 
@@ -189,9 +241,20 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required.' });
     }
 
-    const user = dbGet('SELECT * FROM users WHERE email = ?', [email.toLowerCase().trim()]);
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid email or password.' });
+    const cleanEmail = email.toLowerCase().trim();
+    let user;
+
+    if (useSupabase) {
+      const { data, error } = await supabase.from('users').select('*').eq('email', cleanEmail).maybeSingle();
+      if (error || !data) {
+        return res.status(401).json({ error: 'Invalid email or password.' });
+      }
+      user = data;
+    } else {
+      user = dbGet('SELECT * FROM users WHERE email = ?', [cleanEmail]);
+      if (!user) {
+        return res.status(401).json({ error: 'Invalid email or password.' });
+      }
     }
 
     const match = await bcrypt.compare(password, user.password_hash);
@@ -219,15 +282,24 @@ app.post('/api/auth/logout', (req, res) => {
   });
 });
 
-app.get('/api/auth/me', (req, res) => {
+app.get('/api/auth/me', async (req, res) => {
   if (!req.session.userId) {
     return res.status(401).json({ error: 'Not authenticated.' });
   }
-  const user = dbGet('SELECT id, name, email, phone, role FROM users WHERE id = ?', [req.session.userId]);
-  if (!user) {
-    return res.status(401).json({ error: 'User not found.' });
+
+  if (useSupabase) {
+    const { data: user, error } = await supabase.from('users').select('id, name, email, phone, role').eq('id', req.session.userId).maybeSingle();
+    if (error || !user) {
+      return res.status(401).json({ error: 'User not found.' });
+    }
+    return res.json({ user });
+  } else {
+    const user = dbGet('SELECT id, name, email, phone, role FROM users WHERE id = ?', [req.session.userId]);
+    if (!user) {
+      return res.status(401).json({ error: 'User not found.' });
+    }
+    return res.json({ user });
   }
-  res.json({ user });
 });
 
 // Setup/Create Admin Account
@@ -245,26 +317,36 @@ app.post('/api/auth/setup-admin', async (req, res) => {
     const adminEmail = email.toLowerCase().trim();
     const hash = await bcrypt.hash(password, SALT_ROUNDS);
 
-    const existingAdmin = dbGet("SELECT id FROM users WHERE role = 'admin' OR email = ?", [adminEmail]);
+    if (useSupabase) {
+      const { data: existingAdmin } = await supabase.from('users').select('id').or(`role.eq.admin,email.eq.${adminEmail}`).limit(1);
 
-    if (existingAdmin) {
-      dbRun('UPDATE users SET name = ?, email = ?, password_hash = ?, role = ? WHERE id = ?',
-        [adminName, adminEmail, hash, 'admin', existingAdmin.id]);
+      if (existingAdmin && existingAdmin.length > 0) {
+        await supabase.from('users').update({ name: adminName, email: adminEmail, password_hash: hash, role: 'admin' }).eq('id', existingAdmin[0].id);
+      } else {
+        await supabase.from('users').insert([{ name: adminName, email: adminEmail, phone: '', password_hash: hash, role: 'admin' }]);
+      }
+
+      const { data: adminUser } = await supabase.from('users').select('id, name, email, role').eq('role', 'admin').limit(1).single();
+      req.session.userId = adminUser.id;
+      req.session.role = 'admin';
+      req.session.userName = adminUser.name;
+
+      return res.json({ message: 'Admin credentials created and logged in successfully!', user: adminUser });
     } else {
-      dbRun('INSERT INTO users (name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)',
-        [adminName, adminEmail, '', hash, 'admin']);
+      const existingAdmin = dbGet("SELECT id FROM users WHERE role = 'admin' OR email = ?", [adminEmail]);
+      if (existingAdmin) {
+        dbRun('UPDATE users SET name = ?, email = ?, password_hash = ?, role = ? WHERE id = ?',
+          [adminName, adminEmail, hash, 'admin', existingAdmin.id]);
+      } else {
+        dbRun('INSERT INTO users (name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)',
+          [adminName, adminEmail, '', hash, 'admin']);
+      }
+      const adminUser = dbGet("SELECT id, name, email, role FROM users WHERE role = 'admin' LIMIT 1");
+      req.session.userId = adminUser.id;
+      req.session.role = 'admin';
+      req.session.userName = adminUser.name;
+      return res.json({ message: 'Admin credentials created and logged in successfully!', user: adminUser });
     }
-
-    const adminUser = dbGet("SELECT id, name, email, role FROM users WHERE role = 'admin' LIMIT 1");
-
-    req.session.userId = adminUser.id;
-    req.session.role = 'admin';
-    req.session.userName = adminUser.name;
-
-    res.json({
-      message: 'Admin credentials created and logged in successfully!',
-      user: adminUser
-    });
   } catch (err) {
     console.error('Setup admin error:', err);
     res.status(500).json({ error: 'Failed to save admin credentials.' });
@@ -272,144 +354,354 @@ app.post('/api/auth/setup-admin', async (req, res) => {
 });
 
 // Direct One-Click Admin Auto Login
-app.get('/api/auth/one-click-admin', (req, res) => {
-  const adminUser = dbGet("SELECT id, name, email, role FROM users WHERE role = 'admin' LIMIT 1");
-  if (!adminUser) {
-    const hash = bcrypt.hashSync('admin123', SALT_ROUNDS);
-    dbRun('INSERT INTO users (name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)',
-      ['Admin', 'admin@clinic.com', '', hash, 'admin']);
+app.get('/api/auth/one-click-admin', async (req, res) => {
+  try {
+    if (useSupabase) {
+      let { data: adminUser } = await supabase.from('users').select('id, name, email, role').eq('role', 'admin').limit(1).maybeSingle();
+      if (!adminUser) {
+        const hash = bcrypt.hashSync('admin123', SALT_ROUNDS);
+        const { data: created } = await supabase.from('users').insert([{
+          name: 'Admin', email: 'admin@clinic.com', phone: '+92 300 1234567', password_hash: hash, role: 'admin'
+        }]).select().single();
+        adminUser = created;
+      }
+      req.session.userId = adminUser.id;
+      req.session.role = 'admin';
+      req.session.userName = adminUser.name;
+    } else {
+      let adminUser = dbGet("SELECT id, name, email, role FROM users WHERE role = 'admin' LIMIT 1");
+      if (!adminUser) {
+        const hash = bcrypt.hashSync('admin123', SALT_ROUNDS);
+        dbRun('INSERT INTO users (name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)',
+          ['Admin', 'admin@clinic.com', '+92 300 1234567', hash, 'admin']);
+        adminUser = dbGet("SELECT id, name, email, role FROM users WHERE role = 'admin' LIMIT 1");
+      }
+      req.session.userId = adminUser.id;
+      req.session.role = 'admin';
+      req.session.userName = adminUser.name;
+    }
+    res.redirect('/admin-dashboard.html');
+  } catch (err) {
+    console.error('One-click admin error:', err);
+    res.redirect('/admin.html');
   }
-  const activeAdmin = dbGet("SELECT id, name, email, role FROM users WHERE role = 'admin' LIMIT 1");
-  req.session.userId = activeAdmin.id;
-  req.session.role = 'admin';
-  req.session.userName = activeAdmin.name;
-
-  res.redirect('/admin-dashboard.html');
 });
 
 // ── Patient Routes ──────────────────────────────────────────────────
-app.get('/api/appointments', requireAuth, (req, res) => {
-  const appointments = dbAll('SELECT * FROM appointments WHERE user_id = ? ORDER BY created_at DESC', [req.session.userId]);
-  res.json({ appointments });
+app.get('/api/appointments', requireAuth, async (req, res) => {
+  try {
+    if (useSupabase) {
+      const { data: appointments, error } = await supabase
+        .from('appointments')
+        .select('*')
+        .eq('user_id', req.session.userId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      return res.json({ appointments: appointments || [] });
+    } else {
+      const appointments = dbAll('SELECT * FROM appointments WHERE user_id = ? ORDER BY created_at DESC', [req.session.userId]);
+      return res.json({ appointments });
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load appointments.' });
+  }
 });
 
-app.post('/api/appointments', requireAuth, (req, res) => {
-  const { date, time, condition_type, contact, notes } = req.body;
+app.post('/api/appointments', requireAuth, async (req, res) => {
+  try {
+    const { date, time, condition_type, contact, notes } = req.body;
 
-  if (!date || !time || !condition_type) {
-    return res.status(400).json({ error: 'Date, time, and condition are required.' });
+    if (!date || !time || !condition_type) {
+      return res.status(400).json({ error: 'Date, time, and condition are required.' });
+    }
+
+    if (useSupabase) {
+      const { data: appointment, error } = await supabase
+        .from('appointments')
+        .insert([{
+          user_id: req.session.userId,
+          date,
+          time,
+          condition_type,
+          contact: contact || '',
+          notes: notes || ''
+        }])
+        .select('*')
+        .single();
+
+      if (error) throw error;
+      return res.status(201).json({ message: 'Appointment booked successfully.', appointment });
+    } else {
+      dbRun(
+        'INSERT INTO appointments (user_id, date, time, condition_type, contact, notes) VALUES (?, ?, ?, ?, ?, ?)',
+        [req.session.userId, date, time, condition_type, contact || '', notes || '']
+      );
+      const appointment = dbGet('SELECT * FROM appointments WHERE user_id = ? ORDER BY id DESC LIMIT 1', [req.session.userId]);
+      return res.status(201).json({ message: 'Appointment booked successfully.', appointment });
+    }
+  } catch (err) {
+    console.error('Book appointment error:', err);
+    res.status(500).json({ error: 'Failed to book appointment.' });
   }
-
-  dbRun(
-    'INSERT INTO appointments (user_id, date, time, condition_type, contact, notes) VALUES (?, ?, ?, ?, ?, ?)',
-    [req.session.userId, date, time, condition_type, contact || '', notes || '']
-  );
-
-  const appointment = dbGet('SELECT * FROM appointments WHERE user_id = ? ORDER BY id DESC LIMIT 1', [req.session.userId]);
-  res.status(201).json({ message: 'Appointment booked successfully.', appointment });
 });
 
-app.get('/api/profile', requireAuth, (req, res) => {
-  const user = dbGet('SELECT id, name, email, phone, role, created_at FROM users WHERE id = ?', [req.session.userId]);
-  res.json({ user });
+app.get('/api/profile', requireAuth, async (req, res) => {
+  try {
+    if (useSupabase) {
+      const { data: user, error } = await supabase
+        .from('users')
+        .select('id, name, email, phone, role, created_at')
+        .eq('id', req.session.userId)
+        .single();
+      if (error) throw error;
+      return res.json({ user });
+    } else {
+      const user = dbGet('SELECT id, name, email, phone, role, created_at FROM users WHERE id = ?', [req.session.userId]);
+      return res.json({ user });
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load profile.' });
+  }
 });
 
-app.put('/api/profile', requireAuth, (req, res) => {
-  const { name, email, phone } = req.body;
+app.put('/api/profile', requireAuth, async (req, res) => {
+  try {
+    const { name, email, phone } = req.body;
 
-  if (!name || !email) {
-    return res.status(400).json({ error: 'Name and email are required.' });
+    if (!name || !email) {
+      return res.status(400).json({ error: 'Name and email are required.' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+
+    const cleanEmail = email.toLowerCase().trim();
+    const cleanName = name.trim();
+    const cleanPhone = phone || '';
+
+    if (useSupabase) {
+      const { data: existing } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', cleanEmail)
+        .neq('id', req.session.userId)
+        .maybeSingle();
+
+      if (existing) {
+        return res.status(409).json({ error: 'This email is already used by another account.' });
+      }
+
+      const { data: user, error } = await supabase
+        .from('users')
+        .update({ name: cleanName, email: cleanEmail, phone: cleanPhone })
+        .eq('id', req.session.userId)
+        .select('id, name, email, phone, role')
+        .single();
+
+      if (error) throw error;
+      req.session.userName = cleanName;
+      return res.json({ message: 'Profile updated.', user });
+    } else {
+      const existing = dbGet('SELECT id FROM users WHERE email = ? AND id != ?', [cleanEmail, req.session.userId]);
+      if (existing) {
+        return res.status(409).json({ error: 'This email is already used by another account.' });
+      }
+
+      dbRun('UPDATE users SET name = ?, email = ?, phone = ? WHERE id = ?', [cleanName, cleanEmail, cleanPhone, req.session.userId]);
+      req.session.userName = cleanName;
+      const user = dbGet('SELECT id, name, email, phone, role FROM users WHERE id = ?', [req.session.userId]);
+      return res.json({ message: 'Profile updated.', user });
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update profile.' });
   }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return res.status(400).json({ error: 'Please enter a valid email address.' });
-  }
-
-  const existing = dbGet('SELECT id FROM users WHERE email = ? AND id != ?', [email.toLowerCase().trim(), req.session.userId]);
-  if (existing) {
-    return res.status(409).json({ error: 'This email is already used by another account.' });
-  }
-
-  dbRun('UPDATE users SET name = ?, email = ?, phone = ? WHERE id = ?',
-    [name.trim(), email.toLowerCase().trim(), phone || '', req.session.userId]);
-
-  req.session.userName = name.trim();
-
-  const user = dbGet('SELECT id, name, email, phone, role FROM users WHERE id = ?', [req.session.userId]);
-  res.json({ message: 'Profile updated.', user });
 });
 
 // ── Admin Routes ────────────────────────────────────────────────────
-app.get('/api/admin/stats', requireAdmin, (req, res) => {
-  const totalAppointments = dbGet('SELECT COUNT(*) as count FROM appointments').count;
-  const pendingAppointments = dbGet("SELECT COUNT(*) as count FROM appointments WHERE status = 'Pending'").count;
-  const totalPatients = dbGet("SELECT COUNT(*) as count FROM users WHERE role = 'patient'").count;
-  res.json({ totalAppointments, pendingAppointments, totalPatients });
+app.get('/api/admin/stats', requireAdmin, async (req, res) => {
+  try {
+    if (useSupabase) {
+      const { count: totalAppointments } = await supabase.from('appointments').select('*', { count: 'exact', head: true });
+      const { count: pendingAppointments } = await supabase.from('appointments').select('*', { count: 'exact', head: true }).eq('status', 'Pending');
+      const { count: totalPatients } = await supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'patient');
+
+      return res.json({
+        totalAppointments: totalAppointments || 0,
+        pendingAppointments: pendingAppointments || 0,
+        totalPatients: totalPatients || 0
+      });
+    } else {
+      const totalAppointments = dbGet('SELECT COUNT(*) as count FROM appointments').count;
+      const pendingAppointments = dbGet("SELECT COUNT(*) as count FROM appointments WHERE status = 'Pending'").count;
+      const totalPatients = dbGet("SELECT COUNT(*) as count FROM users WHERE role = 'patient'").count;
+      return res.json({ totalAppointments, pendingAppointments, totalPatients });
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load stats.' });
+  }
 });
 
-app.get('/api/admin/appointments', requireAdmin, (req, res) => {
-  const { status, search, date } = req.query;
-  let sql = `
-    SELECT a.*, u.name as patient_name, u.email as patient_email, u.phone as patient_phone
-    FROM appointments a
-    JOIN users u ON a.user_id = u.id
-    WHERE 1=1
-  `;
-  const params = [];
+app.get('/api/admin/appointments', requireAdmin, async (req, res) => {
+  try {
+    const { status, search, date } = req.query;
 
-  if (status && status !== 'all') {
-    sql += ' AND a.status = ?';
-    params.push(status);
-  }
-  if (search) {
-    sql += ' AND (u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ?)';
-    const like = `%${search}%`;
-    params.push(like, like, like);
-  }
-  if (date) {
-    sql += ' AND a.date = ?';
-    params.push(date);
-  }
+    if (useSupabase) {
+      let query = supabase
+        .from('appointments')
+        .select('*, users:user_id(name, email, phone)')
+        .order('created_at', { ascending: false });
 
-  sql += ' ORDER BY a.created_at DESC';
+      if (status && status !== 'all') {
+        query = query.eq('status', status);
+      }
+      if (date) {
+        query = query.eq('date', date);
+      }
 
-  const appointments = dbAll(sql, params);
-  res.json({ appointments });
+      const { data: rawAppointments, error } = await query;
+      if (error) throw error;
+
+      let appointments = (rawAppointments || []).map(a => ({
+        ...a,
+        patient_name: a.users?.name || 'N/A',
+        patient_email: a.users?.email || 'N/A',
+        patient_phone: a.users?.phone || 'N/A'
+      }));
+
+      if (search) {
+        const lowerSearch = search.toLowerCase();
+        appointments = appointments.filter(a =>
+          a.patient_name.toLowerCase().includes(lowerSearch) ||
+          a.patient_email.toLowerCase().includes(lowerSearch) ||
+          a.patient_phone.toLowerCase().includes(lowerSearch)
+        );
+      }
+
+      return res.json({ appointments });
+    } else {
+      let sql = `
+        SELECT a.*, u.name as patient_name, u.email as patient_email, u.phone as patient_phone
+        FROM appointments a
+        JOIN users u ON a.user_id = u.id
+        WHERE 1=1
+      `;
+      const params = [];
+      if (status && status !== 'all') {
+        sql += ' AND a.status = ?';
+        params.push(status);
+      }
+      if (search) {
+        sql += ' AND (u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ?)';
+        const like = `%${search}%`;
+        params.push(like, like, like);
+      }
+      if (date) {
+        sql += ' AND a.date = ?';
+        params.push(date);
+      }
+      sql += ' ORDER BY a.created_at DESC';
+      const appointments = dbAll(sql, params);
+      return res.json({ appointments });
+    }
+  } catch (err) {
+    console.error('Fetch admin appointments error:', err);
+    res.status(500).json({ error: 'Failed to fetch appointments.' });
+  }
 });
 
-app.patch('/api/admin/appointments/:id', requireAdmin, (req, res) => {
-  const { status } = req.body;
-  const validStatuses = ['Pending', 'Confirmed', 'Completed', 'Cancelled'];
-  if (!validStatuses.includes(status)) {
-    return res.status(400).json({ error: 'Invalid status.' });
+app.patch('/api/admin/appointments/:id', requireAdmin, async (req, res) => {
+  try {
+    const { status } = req.body;
+    const validStatuses = ['Pending', 'Confirmed', 'Completed', 'Cancelled'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status.' });
+    }
+
+    const apptId = parseInt(req.params.id);
+
+    if (useSupabase) {
+      const { data: appointment, error } = await supabase
+        .from('appointments')
+        .update({ status })
+        .eq('id', apptId)
+        .select('*, users:user_id(name, email, phone)')
+        .single();
+
+      if (error) throw error;
+      const formatted = {
+        ...appointment,
+        patient_name: appointment.users?.name || 'N/A',
+        patient_email: appointment.users?.email || 'N/A',
+        patient_phone: appointment.users?.phone || 'N/A'
+      };
+      return res.json({ message: 'Status updated.', appointment: formatted });
+    } else {
+      dbRun('UPDATE appointments SET status = ? WHERE id = ?', [status, apptId]);
+      const appointment = dbGet(`
+        SELECT a.*, u.name as patient_name, u.email as patient_email, u.phone as patient_phone
+        FROM appointments a JOIN users u ON a.user_id = u.id WHERE a.id = ?
+      `, [apptId]);
+      return res.json({ message: 'Status updated.', appointment });
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update status.' });
   }
-
-  dbRun('UPDATE appointments SET status = ? WHERE id = ?', [status, parseInt(req.params.id)]);
-  const appointment = dbGet(`
-    SELECT a.*, u.name as patient_name, u.email as patient_email, u.phone as patient_phone
-    FROM appointments a JOIN users u ON a.user_id = u.id WHERE a.id = ?
-  `, [parseInt(req.params.id)]);
-
-  res.json({ message: 'Status updated.', appointment });
 });
 
-app.get('/api/admin/patients', requireAdmin, (req, res) => {
-  const patients = dbAll(`
-    SELECT u.id, u.name, u.email, u.phone, u.created_at,
-           (SELECT COUNT(*) FROM appointments WHERE user_id = u.id) as appointment_count
-    FROM users u
-    WHERE u.role = 'patient'
-    ORDER BY u.created_at DESC
-  `);
-  res.json({ patients });
+app.get('/api/admin/patients', requireAdmin, async (req, res) => {
+  try {
+    if (useSupabase) {
+      const { data: patients, error } = await supabase
+        .from('users')
+        .select('id, name, email, phone, created_at, appointments(count)')
+        .eq('role', 'patient')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      const formatted = (patients || []).map(p => ({
+        id: p.id,
+        name: p.name,
+        email: p.email,
+        phone: p.phone,
+        created_at: p.created_at,
+        appointment_count: p.appointments ? p.appointments[0]?.count || 0 : 0
+      }));
+      return res.json({ patients: formatted });
+    } else {
+      const patients = dbAll(`
+        SELECT u.id, u.name, u.email, u.phone, u.created_at,
+               (SELECT COUNT(*) FROM appointments WHERE user_id = u.id) as appointment_count
+        FROM users u
+        WHERE u.role = 'patient'
+        ORDER BY u.created_at DESC
+      `);
+      return res.json({ patients });
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch patients.' });
+  }
 });
 
-app.get('/api/admin/patients/:id/appointments', requireAdmin, (req, res) => {
-  const patient = dbGet('SELECT id, name, email, phone FROM users WHERE id = ? AND role = ?', [parseInt(req.params.id), 'patient']);
-  if (!patient) {
-    return res.status(404).json({ error: 'Patient not found.' });
+app.get('/api/admin/patients/:id/appointments', requireAdmin, async (req, res) => {
+  try {
+    const patientId = parseInt(req.params.id);
+
+    if (useSupabase) {
+      const { data: patient } = await supabase.from('users').select('id, name, email, phone').eq('id', patientId).eq('role', 'patient').single();
+      if (!patient) return res.status(404).json({ error: 'Patient not found.' });
+
+      const { data: appointments } = await supabase.from('appointments').select('*').eq('user_id', patientId).order('created_at', { ascending: false });
+      return res.json({ patient, appointments: appointments || [] });
+    } else {
+      const patient = dbGet('SELECT id, name, email, phone FROM users WHERE id = ? AND role = ?', [patientId, 'patient']);
+      if (!patient) return res.status(404).json({ error: 'Patient not found.' });
+      const appointments = dbAll('SELECT * FROM appointments WHERE user_id = ? ORDER BY created_at DESC', [patientId]);
+      return res.json({ patient, appointments });
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch patient appointments.' });
   }
-  const appointments = dbAll('SELECT * FROM appointments WHERE user_id = ? ORDER BY created_at DESC', [parseInt(req.params.id)]);
-  res.json({ patient, appointments });
 });
 
 // ── Start Server ────────────────────────────────────────────────────
@@ -420,7 +712,7 @@ async function start() {
     console.log(`   ──────────────────────────`);
     console.log(`   Website:  http://localhost:${PORT}`);
     console.log(`   Admin:    http://localhost:${PORT}/admin.html`);
-    console.log(`   Status:   Running\n`);
+    console.log(`   Backend:  ${useSupabase ? 'Supabase (' + SUPABASE_URL + ')' : 'Local SQLite'}\n`);
   });
 }
 

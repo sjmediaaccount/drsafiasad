@@ -8,6 +8,7 @@
     "dev": "node server.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.117.2",
     "bcryptjs": "^2.4.3",
     "express": "^4.21.0",
     "express-session": "^1.18.1",
