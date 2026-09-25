@@ -17,8 +17,8 @@ const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jtnzjmcejnmeyyzeqcel.s
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_w6OkN7lfxkzcY4NHb9YASw_MiajRLxP';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-let useSupabase = true; // Default to Supabase
-let db; // Fallback SQLite db instance
+let useSupabase = true;
+let db;
 
 // ── Database Setup ──────────────────────────────────────────────────
 async function initDatabase() {
@@ -34,7 +34,6 @@ async function initDatabase() {
     console.log('⚠️ Supabase connection error:', err.message);
   }
 
-  // Local SQLite fallback (only if not on Vercel read-only filesystem)
   if (!process.env.VERCEL) {
     try {
       const SQL = await initSqlJs();
@@ -148,6 +147,11 @@ app.use(express.static(__dirname, {
   index: 'index.html',
   extensions: ['html']
 }));
+
+// Root Route Handler for Vercel
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
 
 // Expose Supabase Config endpoint to frontend
 app.get('/api/config/supabase', (req, res) => {
@@ -647,7 +651,7 @@ app.patch('/api/admin/appointments/:id', requireAdmin, async (req, res) => {
       };
       return res.json({ message: 'Status updated.', appointment: formatted });
     } else {
-      dbRun('UPDATE appointments SET status = ? WHERE id = ?', [status, apptId]);
+      dbRun('UPDATE status = ? WHERE id = ?', [status, apptId]);
       const appointment = dbGet(`
         SELECT a.*, u.name as patient_name, u.email as patient_email, u.phone as patient_phone
         FROM appointments a JOIN users u ON a.user_id = u.id WHERE a.id = ?
