@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>One-Time Admin Setup — Dr. Safi Asad Clinic</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌿</text></svg>">
+</head>
+<body style="background: var(--bg-alt); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 40px 20px;">
+
+  <div style="max-width: 520px; width: 100%; background: var(--white); border-radius: var(--radius-lg); padding: 40px; box-shadow: var(--shadow-card-hover);">
+    <div style="text-align: center; margin-bottom: 28px;">
+      <div style="display: inline-flex; align-items: center; justify-content: center; width: 56px; height: 56px; background: rgba(20, 184, 166, 0.12); border-radius: 50%; margin-bottom: 16px;">
+        <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="var(--teal)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><circle cx="12" cy="11" r="3"/><path d="M12 14v4"/></svg>
+      </div>
+      <span class="eyebrow">ADMIN PORTAL SETUP</span>
+      <h2 style="font-size: 1.6rem; color: var(--navy); font-weight: 800; margin-top: 4px;">Set Admin Credentials</h2>
+      <p style="font-size: 0.9rem; color: var(--text-body); margin-top: 6px;">Create or update your Admin account details below.</p>
+    </div>
+
+    <!-- Quick Auto Login Box -->
+    <div style="background: rgba(15, 42, 67, 0.04); border: 1px solid rgba(15, 42, 67, 0.1); border-radius: var(--radius-md); padding: 18px; margin-bottom: 24px; text-align: center;">
+      <div style="font-size: 0.82rem; font-weight: 700; color: var(--navy); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">⚡ Direct Instant Login</div>
+      <p style="font-size: 0.85rem; color: var(--text-body); margin-bottom: 12px;">Log into the Admin Dashboard immediately using active admin session.</p>
+      <a href="/api/auth/one-click-admin" class="btn btn-teal" style="width: 100%; display: inline-block; text-align: center; font-size: 0.9rem; padding: 12px;">
+        Launch Admin Dashboard Directly &rarr;
+      </a>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 24px;">
+      <div style="flex: 1; height: 1px; background: #E2E8F0;"></div>
+      <span style="font-size: 0.78rem; font-weight: 600; color: var(--text-light); text-transform: uppercase;">Or Customize Credentials</span>
+      <div style="flex: 1; height: 1px; background: #E2E8F0;"></div>
+    </div>
+
+    <div class="alert alert-error" id="setupError" style="margin-bottom: 16px;"></div>
+    <div class="alert alert-success" id="setupSuccess" style="margin-bottom: 16px;"></div>
+
+    <form id="adminSetupForm" onsubmit="handleAdminSetup(event)">
+      <div class="form-group" style="margin-bottom: 18px;">
+        <label class="form-label" for="setupName">Admin Display Name</label>
+        <input type="text" id="setupName" class="form-input" value="Dr. Safi Asad" required style="width: 100%; padding: 12px 16px; border: 1px solid #CBD5E1; border-radius: var(--radius-sm); font-size: 0.9rem;">
+      </div>
+
+      <div class="form-group" style="margin-bottom: 18px;">
+        <label class="form-label" for="setupEmail">Admin Email Address</label>
+        <input type="email" id="setupEmail" class="form-input" value="admin@clinic.com" required style="width: 100%; padding: 12px 16px; border: 1px solid #CBD5E1; border-radius: var(--radius-sm); font-size: 0.9rem;">
+      </div>
+
+      <div class="form-group" style="margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <label class="form-label" for="setupPassword" style="margin: 0;">Admin Password</label>
+          <button type="button" onclick="generateRandomPass()" style="background: none; border: none; color: var(--teal); font-size: 0.8rem; font-weight: 600; cursor: pointer;">🎲 Generate Password</button>
+        </div>
+        <div style="position: relative;">
+          <input type="text" id="setupPassword" class="form-input" value="admin123" required style="width: 100%; padding: 12px 16px; border: 1px solid #CBD5E1; border-radius: var(--radius-sm); font-size: 0.9rem; font-family: monospace;">
+        </div>
+      </div>
+
+      <button type="submit" class="btn btn-navy" id="setupBtn" style="width: 100%; padding: 14px; font-weight: 700; font-size: 0.95rem; border-radius: var(--radius-sm);">
+        Save Credentials & Open Dashboard
+      </button>
+    </form>
+
+    <div style="margin-top: 24px; text-align: center; font-size: 0.85rem;">
+      <a href="index.html" style="color: var(--text-body); text-decoration: none;">&larr; Back to Main Website</a>
+    </div>
+  </div>
+
+  <script>
+    function generateRandomPass() {
+      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$';
+      let pass = '';
+      for (let i = 0; i < 10; i++) {
+        pass += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      document.getElementById('setupPassword').value = pass;
+    }
+
+    async function handleAdminSetup(e) {
+      e.preventDefault();
+      const errorEl = document.getElementById('setupError');
+      const successEl = document.getElementById('setupSuccess');
+      errorEl.classList.remove('visible');
+      successEl.classList.remove('visible');
+
+      const btn = document.getElementById('setupBtn');
+      btn.disabled = true;
+      btn.textContent = 'Saving Credentials...';
+
+      try {
+        const res = await fetch('/api/auth/setup-admin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: document.getElementById('setupName').value,
+            email: document.getElementById('setupEmail').value,
+            password: document.getElementById('setupPassword').value
+          })
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+
+        successEl.textContent = '✓ Admin credentials saved! Redirecting to dashboard...';
+        successEl.classList.add('visible');
+
+        setTimeout(() => {
+          window.location.href = 'admin-dashboard.html';
+        }, 1000);
+      } catch (err) {
+        errorEl.textContent = err.message || 'Failed to save admin details';
+        errorEl.classList.add('visible');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Save Credentials & Open Dashboard';
+      }
+    }
+  </script>
+</body>
+</html>
