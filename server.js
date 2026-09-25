@@ -17,82 +17,89 @@ const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jtnzjmcejnmeyyzeqcel.s
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_w6OkN7lfxkzcY4NHb9YASw_MiajRLxP';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-let useSupabase = false;
+let useSupabase = true; // Default to Supabase
 let db; // Fallback SQLite db instance
 
-// ── Database Setup & Health Check ───────────────────────────────────
+// ── Database Setup ──────────────────────────────────────────────────
 async function initDatabase() {
-  // Test connection to Supabase
   try {
     const { data, error } = await supabase.from('users').select('id').limit(1);
-    if (!error) {
+    if (!error || error.code === 'PGRST205') {
       useSupabase = true;
-      console.log('⚡ Connected to Supabase backend successfully!');
+      console.log('⚡ Connected to Supabase backend!');
     } else {
       console.log(`⚠️ Supabase Notice: ${error.message}`);
-      console.log('🔄 Falling back to local SQLite database engine...');
     }
   } catch (err) {
-    console.log('⚠️ Could not connect to Supabase, fallback to local SQLite database.');
+    console.log('⚠️ Supabase connection error:', err.message);
   }
 
-  // Always initialize SQLite fallback to ensure 100% uptime
-  const SQL = await initSqlJs();
-  if (fs.existsSync(DB_PATH)) {
-    const fileBuffer = fs.readFileSync(DB_PATH);
-    db = new SQL.Database(fileBuffer);
-  } else {
-    db = new SQL.Database();
-  }
+  // Local SQLite fallback (only if not on Vercel read-only filesystem)
+  if (!process.env.VERCEL) {
+    try {
+      const SQL = await initSqlJs();
+      if (fs.existsSync(DB_PATH)) {
+        const fileBuffer = fs.readFileSync(DB_PATH);
+        db = new SQL.Database(fileBuffer);
+      } else {
+        db = new SQL.Database();
+      }
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      email TEXT NOT NULL UNIQUE,
-      phone TEXT NOT NULL DEFAULT '',
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'patient' CHECK(role IN ('patient', 'admin')),
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+      db.run(`
+        CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          email TEXT NOT NULL UNIQUE,
+          phone TEXT NOT NULL DEFAULT '',
+          password_hash TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'patient' CHECK(role IN ('patient', 'admin')),
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS appointments (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      date TEXT NOT NULL,
-      time TEXT NOT NULL,
-      condition_type TEXT NOT NULL,
-      contact TEXT NOT NULL DEFAULT '',
-      notes TEXT DEFAULT '',
-      status TEXT NOT NULL DEFAULT 'Pending' CHECK(status IN ('Pending', 'Confirmed', 'Completed', 'Cancelled')),
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    )
-  `);
+      db.run(`
+        CREATE TABLE IF NOT EXISTS appointments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          date TEXT NOT NULL,
+          time TEXT NOT NULL,
+          condition_type TEXT NOT NULL,
+          contact TEXT NOT NULL DEFAULT '',
+          notes TEXT DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'Pending' CHECK(status IN ('Pending', 'Confirmed', 'Completed', 'Cancelled')),
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+      `);
 
-  // Seed default admin account in SQLite fallback
-  const adminCheck = db.exec("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
-  if (adminCheck.length === 0) {
-    const hash = bcrypt.hashSync('admin123', SALT_ROUNDS);
-    db.run('INSERT INTO users (name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)',
-      ['Admin', 'admin@clinic.com', '+92 300 1234567', hash, 'admin']);
-    saveDb();
-    console.log('✓ Local Default admin ready: admin@clinic.com / admin123');
+      const adminCheck = db.exec("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
+      if (adminCheck.length === 0) {
+        const hash = bcrypt.hashSync('admin123', SALT_ROUNDS);
+        db.run('INSERT INTO users (name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)',
+          ['Admin', 'admin@clinic.com', '+92 300 1234567', hash, 'admin']);
+        saveDb();
+      }
+    } catch (e) {
+      console.warn('SQLite init warning:', e.message);
+    }
   }
 }
 
 function saveDb() {
-  if (db) {
-    const data = db.export();
-    const buffer = Buffer.from(data);
-    fs.writeFileSync(DB_PATH, buffer);
+  if (db && !process.env.VERCEL) {
+    try {
+      const data = db.export();
+      const buffer = Buffer.from(data);
+      fs.writeFileSync(DB_PATH, buffer);
+    } catch (e) {
+      console.warn('Could not save SQLite to disk:', e.message);
+    }
   }
 }
 
 // ── SQLite Helpers ──────────────────────────────────────────────────
 function dbAll(sql, params = []) {
+  if (!db) return [];
   const stmt = db.prepare(sql);
   stmt.bind(params);
   const results = [];
@@ -109,6 +116,7 @@ function dbGet(sql, params = []) {
 }
 
 function dbRun(sql, params = []) {
+  if (!db) return null;
   const stmt = db.prepare(sql);
   stmt.bind(params);
   stmt.step();
@@ -126,7 +134,7 @@ app.use(helmet({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(session({
-  secret: 'dr-safi-clinic-secret-key-change-in-production',
+  secret: process.env.SESSION_SECRET || 'dr-safi-clinic-secret-key-vercel',
   resave: false,
   saveUninitialized: false,
   cookie: {
@@ -152,14 +160,14 @@ app.get('/api/config/supabase', (req, res) => {
 
 // ── Auth Middleware Helpers ──────────────────────────────────────────
 function requireAuth(req, res, next) {
-  if (!req.session.userId) {
+  if (!req.session || !req.session.userId) {
     return res.status(401).json({ error: 'Not authenticated. Please log in.' });
   }
   next();
 }
 
 function requireAdmin(req, res, next) {
-  if (!req.session.userId || req.session.role !== 'admin') {
+  if (!req.session || !req.session.userId || req.session.role !== 'admin') {
     return res.status(403).json({ error: 'Admin access required.' });
   }
   next();
@@ -189,7 +197,6 @@ app.post('/api/auth/register', async (req, res) => {
     const hash = await bcrypt.hash(password, SALT_ROUNDS);
 
     if (useSupabase) {
-      // Check existing in Supabase
       const { data: existing } = await supabase.from('users').select('id').eq('email', cleanEmail).maybeSingle();
       if (existing) {
         return res.status(409).json({ error: 'An account with this email already exists.' });
@@ -211,7 +218,6 @@ app.post('/api/auth/register', async (req, res) => {
 
       return res.status(201).json({ message: 'Account created successfully.', user: newUser });
     } else {
-      // SQLite fallback
       const existing = dbGet('SELECT id FROM users WHERE email = ?', [cleanEmail]);
       if (existing) {
         return res.status(409).json({ error: 'An account with this email already exists.' });
@@ -277,13 +283,17 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 app.post('/api/auth/logout', (req, res) => {
-  req.session.destroy(() => {
-    res.json({ message: 'Logged out successfully.' });
-  });
+  if (req.session) {
+    req.session.destroy(() => {
+      res.json({ message: 'Logged out successfully.' });
+    });
+  } else {
+    res.json({ message: 'Logged out.' });
+  }
 });
 
 app.get('/api/auth/me', async (req, res) => {
-  if (!req.session.userId) {
+  if (!req.session || !req.session.userId) {
     return res.status(401).json({ error: 'Not authenticated.' });
   }
 
@@ -704,19 +714,15 @@ app.get('/api/admin/patients/:id/appointments', requireAdmin, async (req, res) =
   }
 });
 
-// ── Start Server ────────────────────────────────────────────────────
-async function start() {
-  await initDatabase();
+// Initialize DB asynchronously
+initDatabase().catch(err => console.error('DB init error:', err));
+
+// Export Express App for Vercel Serverless Function
+module.exports = app;
+
+// Run standalone server if not on Vercel
+if (!process.env.VERCEL) {
   app.listen(PORT, () => {
-    console.log(`\n🌿 Dr. Safi Asad Clinic Server`);
-    console.log(`   ──────────────────────────`);
-    console.log(`   Website:  http://localhost:${PORT}`);
-    console.log(`   Admin:    http://localhost:${PORT}/admin.html`);
-    console.log(`   Backend:  ${useSupabase ? 'Supabase (' + SUPABASE_URL + ')' : 'Local SQLite'}\n`);
+    console.log(`\n🌿 Dr. Safi Asad Clinic Server running on http://localhost:${PORT}`);
   });
 }
-
-start().catch(err => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
