@@ -142,31 +142,50 @@ app.use(session({
   }
 }));
 
-// Serve static files
+// Serve static files from public and root
+app.use(express.static(path.join(__dirname, 'public'), {
+  index: 'index.html',
+  extensions: ['html', 'htm', 'css', 'png', 'jpg', 'jpeg', 'jfif', 'js', 'json']
+}));
 app.use(express.static(__dirname, {
   index: 'index.html',
-  extensions: ['html', 'htm', 'css', 'png', 'jpg', 'jpeg', 'jfif', 'js', 'json', 'sql', 'db']
+  extensions: ['html', 'htm', 'css', 'png', 'jpg', 'jpeg', 'jfif', 'js', 'json']
 }));
 
 // Route Handlers for HTML Pages
 app.get(['/', '/index', '/index.html'], (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
+  const filePath = fs.existsSync(path.join(__dirname, 'public', 'index.html'))
+    ? path.join(__dirname, 'public', 'index.html')
+    : path.join(__dirname, 'index.html');
+  res.sendFile(filePath);
 });
 
 app.get(['/dashboard', '/dashboard.html'], (req, res) => {
-  res.sendFile(path.join(__dirname, 'dashboard.html'));
+  const filePath = fs.existsSync(path.join(__dirname, 'public', 'dashboard.html'))
+    ? path.join(__dirname, 'public', 'dashboard.html')
+    : path.join(__dirname, 'dashboard.html');
+  res.sendFile(filePath);
 });
 
 app.get(['/admin', '/admin.html'], (req, res) => {
-  res.sendFile(path.join(__dirname, 'admin.html'));
+  const filePath = fs.existsSync(path.join(__dirname, 'public', 'admin.html'))
+    ? path.join(__dirname, 'public', 'admin.html')
+    : path.join(__dirname, 'admin.html');
+  res.sendFile(filePath);
 });
 
 app.get(['/admin-dashboard', '/admin-dashboard.html'], (req, res) => {
-  res.sendFile(path.join(__dirname, 'admin-dashboard.html'));
+  const filePath = fs.existsSync(path.join(__dirname, 'public', 'admin-dashboard.html'))
+    ? path.join(__dirname, 'public', 'admin-dashboard.html')
+    : path.join(__dirname, 'admin-dashboard.html');
+  res.sendFile(filePath);
 });
 
 app.get(['/admin-setup', '/admin-setup.html'], (req, res) => {
-  res.sendFile(path.join(__dirname, 'admin-setup.html'));
+  const filePath = fs.existsSync(path.join(__dirname, 'public', 'admin-setup.html'))
+    ? path.join(__dirname, 'public', 'admin-setup.html')
+    : path.join(__dirname, 'admin-setup.html');
+  res.sendFile(filePath);
 });
 
 // Expose Supabase Config endpoint to frontend
