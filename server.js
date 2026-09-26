@@ -145,12 +145,28 @@ app.use(session({
 // Serve static files
 app.use(express.static(__dirname, {
   index: 'index.html',
-  extensions: ['html']
+  extensions: ['html', 'htm', 'css', 'png', 'jpg', 'jpeg', 'jfif', 'js', 'json', 'sql', 'db']
 }));
 
-// Root Route Handler for Vercel
-app.get('/', (req, res) => {
+// Route Handlers for HTML Pages
+app.get(['/', '/index', '/index.html'], (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+app.get(['/dashboard', '/dashboard.html'], (req, res) => {
+  res.sendFile(path.join(__dirname, 'dashboard.html'));
+});
+
+app.get(['/admin', '/admin.html'], (req, res) => {
+  res.sendFile(path.join(__dirname, 'admin.html'));
+});
+
+app.get(['/admin-dashboard', '/admin-dashboard.html'], (req, res) => {
+  res.sendFile(path.join(__dirname, 'admin-dashboard.html'));
+});
+
+app.get(['/admin-setup', '/admin-setup.html'], (req, res) => {
+  res.sendFile(path.join(__dirname, 'admin-setup.html'));
 });
 
 // Expose Supabase Config endpoint to frontend
