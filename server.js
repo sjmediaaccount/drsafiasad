@@ -73,9 +73,9 @@ async function initDatabase() {
 
       const adminCheck = db.exec("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
       if (adminCheck.length === 0) {
-        const hash = bcrypt.hashSync('admin123', SALT_ROUNDS);
+        const hash = bcrypt.hashSync('Pakistan@321', SALT_ROUNDS);
         db.run('INSERT INTO users (name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)',
-          ['Admin', 'admin@clinic.com', '+92 300 1234567', hash, 'admin']);
+          ['Shazeem Javed', 'shazeemjaved88@gmail.com', '+92 300 1234567', hash, 'admin']);
         saveDb();
       }
     } catch (e) {
@@ -408,9 +408,9 @@ app.get('/api/auth/one-click-admin', async (req, res) => {
     if (useSupabase) {
       let { data: adminUser } = await supabase.from('users').select('id, name, email, role').eq('role', 'admin').limit(1).maybeSingle();
       if (!adminUser) {
-        const hash = bcrypt.hashSync('admin123', SALT_ROUNDS);
+        const hash = bcrypt.hashSync('Pakistan@321', SALT_ROUNDS);
         const { data: created } = await supabase.from('users').insert([{
-          name: 'Admin', email: 'admin@clinic.com', phone: '+92 300 1234567', password_hash: hash, role: 'admin'
+          name: 'Shazeem Javed', email: 'shazeemjaved88@gmail.com', phone: '+92 300 1234567', password_hash: hash, role: 'admin'
         }]).select().single();
         adminUser = created;
       }
@@ -420,9 +420,9 @@ app.get('/api/auth/one-click-admin', async (req, res) => {
     } else {
       let adminUser = dbGet("SELECT id, name, email, role FROM users WHERE role = 'admin' LIMIT 1");
       if (!adminUser) {
-        const hash = bcrypt.hashSync('admin123', SALT_ROUNDS);
+        const hash = bcrypt.hashSync('Pakistan@321', SALT_ROUNDS);
         dbRun('INSERT INTO users (name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)',
-          ['Admin', 'admin@clinic.com', '+92 300 1234567', hash, 'admin']);
+          ['Shazeem Javed', 'shazeemjaved88@gmail.com', '+92 300 1234567', hash, 'admin']);
         adminUser = dbGet("SELECT id, name, email, role FROM users WHERE role = 'admin' LIMIT 1");
       }
       req.session.userId = adminUser.id;
